@@ -14,8 +14,6 @@ class UserCreate(UserBase):
 class UserResponse(UserBase):
     id: int
     created_at: datetime
-
-    # Tells Pydantic to read data even if it is an ORM model instance
     model_config = ConfigDict(from_attributes=True)
 
 # --- Service Schemas ---
@@ -30,5 +28,20 @@ class ServiceCreate(ServiceBase):
 class ServiceResponse(ServiceBase):
     id: int
     created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
+# --- Incident Schemas ---
+class IncidentBase(BaseModel):
+    title: str
+    description: str
+    status: str = "investigating"
+    severity: str = "sev-3"
+    service_id: int
+
+class IncidentCreate(IncidentBase):
+    pass
+
+class IncidentResponse(IncidentBase):
+    id: int
+    created_at: datetime
     model_config = ConfigDict(from_attributes=True)

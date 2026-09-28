@@ -3,7 +3,6 @@ from sqlalchemy.future import select
 from app import models, schemas
 
 # --- User CRUD ---
-
 async def get_user(db: AsyncSession, user_id: int):
     result = await db.execute(select(models.User).where(models.User.id == user_id))
     return result.scalars().first()
@@ -13,7 +12,6 @@ async def get_user_by_email(db: AsyncSession, email: str):
     return result.scalars().first()
 
 async def create_user(db: AsyncSession, user: schemas.UserCreate):
-    # Convert the Pydantic schema into a SQLAlchemy model dictionary using model_dump()
     db_user = models.User(**user.model_dump())
     db.add(db_user)
     await db.commit()
@@ -21,7 +19,6 @@ async def create_user(db: AsyncSession, user: schemas.UserCreate):
     return db_user
 
 # --- Service CRUD ---
-
 async def get_service(db: AsyncSession, service_id: int):
     result = await db.execute(select(models.Service).where(models.Service.id == service_id))
     return result.scalars().first()
@@ -40,3 +37,15 @@ async def create_service(db: AsyncSession, service: schemas.ServiceCreate):
     await db.commit()
     await db.refresh(db_service)
     return db_service
+
+# --- Incident CRUD ---
+async def create_incident(db: AsyncSession, incident: schemas.IncidentCreate):
+    db_incident = models.Incident(**incident.model_dump())
+    db.add(db_incident)
+    await db.commit()
+    await db.refresh(db_incident)
+    return db_incident
+
+async def get_incidents(db: AsyncSession, skip: int = 0, limit: int = 100):
+    result = await db.execute(select(models.Incident).offset(skip).limit(limit))
+    return result.scalars().all()
