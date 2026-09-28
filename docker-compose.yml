@@ -1,36 +1,44 @@
+version: '3.8'
+
 services:
-  postgres:
-    image: postgres:16-alpine
+  db:
+    image: postgres:16
     container_name: opspilot-postgres
-    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: opspilot_user
+      POSTGRES_PASSWORD: opspilot_password
+      POSTGRES_DB: opspilot_db
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U opspilot_user -d opspilot_db"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7
     container_name: opspilot-redis
-    restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - "6379:6379"
+
+  api:
+    build: ./backend
+    container_name: opspilot-api
+    ports:
+      - "8000:8000"
+    environment:
+      # These override local .env files to use internal Docker networking
+      - DATABASE_URL=postgresql+asyncpg://opspilot_user:opspilot_password@db:5432/opspilot_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
 volumes:
   postgres_data:
-  redis_data:
