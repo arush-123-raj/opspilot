@@ -30,13 +30,24 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # These override local .env files to use internal Docker networking
       - DATABASE_URL=postgresql+asyncpg://opspilot_user:opspilot_password@db:5432/opspilot_db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: ./backend
+    container_name: opspilot-worker
+    command: ["celery", "-A", "app.celery_worker.celery_app", "worker", "--loglevel=info"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://opspilot_user:opspilot_password@db:5432/opspilot_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
       redis:
         condition: service_started
 
