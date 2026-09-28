@@ -2,6 +2,14 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 from datetime import datetime
 from typing import Optional
 
+# --- Token Schemas ---
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
+
 # --- User Schemas ---
 class UserBase(BaseModel):
     email: EmailStr
@@ -9,12 +17,13 @@ class UserBase(BaseModel):
     is_active: bool = True
 
 class UserCreate(UserBase):
-    pass
+    password: str  # <--- Added password requirement
 
 class UserResponse(UserBase):
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+    # Notice we do NOT include the password here, so it never leaks in the API response
 
 # --- Service Schemas ---
 class ServiceBase(BaseModel):

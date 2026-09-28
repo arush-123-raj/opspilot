@@ -9,6 +9,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=False)
+    hashed_password = Column(String) # <--- Added for JWT
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -21,7 +22,6 @@ class Service(Base):
     repository_url = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Establish relationship to Incident
     incidents = relationship("Incident", back_populates="service")
 
 class Incident(Base):
@@ -30,10 +30,9 @@ class Incident(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, index=True, nullable=False)
     description = Column(String, nullable=False)
-    status = Column(String, default="investigating") # e.g., investigating, identified, monitoring, resolved
-    severity = Column(String, default="sev-3")       # e.g., sev-1 to sev-5
+    status = Column(String, default="investigating")
+    severity = Column(String, default="sev-3")
     service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Establish back-reference to Service
     service = relationship("Service", back_populates="incidents")

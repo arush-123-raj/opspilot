@@ -1,36 +1,14 @@
 import os
-from dotenv import load_dotenv
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Load environment variables from the root .env file
-load_dotenv(dotenv_path="../.env")
+# Load from the environment variable provided by Docker Compose, fallback to localhost for local dev
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://opspilot_user:opspilot_password@localhost/opspilot_db")
 
-USER = os.getenv("POSTGRES_USER", "opspilot_user")
-PASSWORD = os.getenv("POSTGRES_PASSWORD", "opspilot_password")
-DB = os.getenv("POSTGRES_DB", "opspilot_db")
-PORT = os.getenv("POSTGRES_PORT", "5432")
-
-# Override 'postgres' host to 'localhost' since we are running uvicorn on the host machine
-HOST = os.getenv("POSTGRES_HOST", "localhost")
-if HOST == "postgres":
-    HOST = "localhost"
-
-# Construct the Asyncpg connection string
-SQLALCHEMY_DATABASE_URL = f"postgresql+asyncpg://{USER}:{PASSWORD}@{HOST}:{PORT}/{DB}"
-
-# Create the async engine
-engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=False, future=True)
-
-# Create a configured "Session" class
-AsyncSessionLocal = async_sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
-
-# Base class for declarative ORM models
+engine = create_async_engine(DATABASE_URL, echo=False)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
-# Dependency for FastAPI endpoints to yield a database session
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session

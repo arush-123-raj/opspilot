@@ -1,8 +1,8 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app import models, schemas
+from app.security import get_password_hash
 
-# --- User CRUD ---
 async def get_user(db: AsyncSession, user_id: int):
     result = await db.execute(select(models.User).where(models.User.id == user_id))
     return result.scalars().first()
@@ -12,13 +12,17 @@ async def get_user_by_email(db: AsyncSession, email: str):
     return result.scalars().first()
 
 async def create_user(db: AsyncSession, user: schemas.UserCreate):
-    db_user = models.User(**user.model_dump())
+    hashed_password = get_password_hash(user.password)
+    user_data = user.model_dump()
+    user_data.pop("password")
+    user_data["hashed_password"] = hashed_password
+    
+    db_user = models.User(**user_data)
     db.add(db_user)
     await db.commit()
     await db.refresh(db_user)
     return db_user
 
-# --- Service CRUD ---
 async def get_service(db: AsyncSession, service_id: int):
     result = await db.execute(select(models.Service).where(models.Service.id == service_id))
     return result.scalars().first()
@@ -38,7 +42,6 @@ async def create_service(db: AsyncSession, service: schemas.ServiceCreate):
     await db.refresh(db_service)
     return db_service
 
-# --- Incident CRUD ---
 async def create_incident(db: AsyncSession, incident: schemas.IncidentCreate):
     db_incident = models.Incident(**incident.model_dump())
     db.add(db_incident)
