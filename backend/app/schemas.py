@@ -54,3 +54,9 @@ class IncidentResponse(IncidentBase):
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+class IncidentUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    severity: Optional[str] = None

@@ -94,3 +94,16 @@ async def read_incidents(response: Response, skip: int = 0, limit: int = 100, db
     incident_responses = [schemas.IncidentResponse.model_validate(i).model_dump(mode='json') for i in incidents]
     await redis_db.setex(cache_key, 30, json.dumps(incident_responses))
     return incidents
+
+@app.patch("/incidents/{incident_id}", response_model=schemas.IncidentResponse)
+async def update_incident(incident_id: int, incident_update: schemas.IncidentUpdate, db: AsyncSession = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    db_incident = await crud.get_incident(db, incident_id=incident_id)
+    if not db_incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    updated_incident = await crud.update_incident(db, db_incident=db_incident, incident_update=incident_update)
+    
+    # Invalidate the incident cache so the next GET request fetches fresh data
+    await redis_db.flushdb()
+    
+    return updated_incident

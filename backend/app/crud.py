@@ -52,3 +52,16 @@ async def create_incident(db: AsyncSession, incident: schemas.IncidentCreate):
 async def get_incidents(db: AsyncSession, skip: int = 0, limit: int = 100):
     result = await db.execute(select(models.Incident).offset(skip).limit(limit))
     return result.scalars().all()
+
+async def get_incident(db: AsyncSession, incident_id: int):
+    result = await db.execute(select(models.Incident).where(models.Incident.id == incident_id))
+    return result.scalars().first()
+
+async def update_incident(db: AsyncSession, db_incident: models.Incident, incident_update: schemas.IncidentUpdate):
+    update_data = incident_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_incident, key, value)
+    db.add(db_incident)
+    await db.commit()
+    await db.refresh(db_incident)
+    return db_incident
