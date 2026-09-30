@@ -1,11 +1,16 @@
 import math
 from typing import Dict, Tuple, List
 
-# In-memory rolling latency window per service for real-time Z-Score / Isolation anomaly detection
 LATENCY_HISTORY: Dict[int, List[float]] = {}
 
-# NLP Root-Cause Signature Knowledge Base & Autonomous Self-Healing Runbooks
 SIGNATURE_CLUSTERS = [
+    {
+        "tag": "PREDICTIVE_LATENCY_DEGRADATION",
+        "keywords": ["predictive ml alert", "latency spiked", "z-score", "degraded"],
+        "summary": "Abnormal response time drift detected prior to hard service failure.",
+        "auto_healable": True,
+        "playbook": "Scaled worker concurrency and reset degraded upstream latency state."
+    },
     {
         "tag": "DB_CONNECTION_POOL_EXHAUSTED",
         "keywords": ["connection", "pool", "too many clients", "timeout", "remaining connection slots", "503", "504"],
@@ -36,12 +41,7 @@ SIGNATURE_CLUSTERS = [
     },
 ]
 
-
 def triage_error_log(raw_error: str) -> Dict[str, object]:
-    """
-    Phase 4 NLP Log Triage: Tokenizes raw error/stack trace strings, matches against
-    historical failure clusters, and determines if Autonomous AI Self-Healing can run.
-    """
     lower_err = raw_error.lower()
     best_cluster = None
     max_hits = 0
@@ -61,23 +61,19 @@ def triage_error_log(raw_error: str) -> Dict[str, object]:
         }
     return best_cluster
 
-
 def detect_latency_anomaly(service_id: int, latency_ms: float) -> Tuple[bool, str]:
-    """
-    Phase 4 Predictive Anomaly Detection: Tracks rolling response times and flags
-    abnormal latency drift (Z-score > 2.5 or hard threshold > 1500ms) BEFORE a 500 crash.
-    """
     history = LATENCY_HISTORY.setdefault(service_id, [])
     is_anomaly = False
     reason = "Latency within normal baseline."
 
+    # Only flag anomalies when latency exceeds 200ms (ignores 5-15ms local jitter)
     if len(history) >= 3:
         mean = sum(history) / len(history)
         variance = sum((x - mean) ** 2 for x in history) / len(history)
         std_dev = math.sqrt(variance) or 1.0
         z_score = (latency_ms - mean) / std_dev
 
-        if latency_ms > 1500 or (z_score > 2.5 and latency_ms > mean * 2):
+        if latency_ms > 1500 or (latency_ms > 200 and z_score > 2.5 and latency_ms > mean * 2):
             is_anomaly = True
             reason = (
                 f"Predictive ML Alert: Latency spiked to {latency_ms}ms "
@@ -87,7 +83,6 @@ def detect_latency_anomaly(service_id: int, latency_ms: float) -> Tuple[bool, st
         is_anomaly = True
         reason = f"Predictive ML Alert: Severe initial latency spike ({latency_ms}ms > 1500ms threshold)"
 
-    # Keep rolling window of last 20 health checks
     history.append(latency_ms)
     if len(history) > 20:
         history.pop(0)
