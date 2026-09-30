@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, EmailStr
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 # --- Token Schemas ---
 class Token(BaseModel):
@@ -17,13 +17,12 @@ class UserBase(BaseModel):
     is_active: bool = True
 
 class UserCreate(UserBase):
-    password: str  # <--- Added password requirement
+    password: str
 
 class UserResponse(UserBase):
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
-    # Notice we do NOT include the password here, so it never leaks in the API response
 
 # --- Service Schemas ---
 class ServiceBase(BaseModel):
@@ -37,6 +36,15 @@ class ServiceCreate(ServiceBase):
 class ServiceResponse(ServiceBase):
     id: int
     created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+# --- AuditLog Schemas ---
+class AuditLogResponse(BaseModel):
+    id: int
+    incident_id: int
+    action: str
+    details: Optional[str] = None
+    timestamp: datetime
     model_config = ConfigDict(from_attributes=True)
 
 # --- Incident Schemas ---

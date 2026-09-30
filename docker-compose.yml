@@ -42,12 +42,14 @@ services:
   worker:
     build: ./backend
     container_name: opspilot-worker
-    command: ["celery", "-A", "app.celery_worker.celery_app", "worker", "--loglevel=info"]
+    command: ["celery", "-A", "app.celery_worker.celery_app", "worker", "-B", "--loglevel=info"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://opspilot_user:opspilot_password@db:5432/opspilot_db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_started
 
