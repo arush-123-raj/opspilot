@@ -298,3 +298,30 @@ from app.aiops_engine import load_trained_artifacts
 async def retrain_aiops_models():
     metrics = load_trained_artifacts(force_retrain=True)
     return {"status": "retrained", "model_artifact": "aiops_model_weights.npz", "metrics": metrics}
+
+
+from app.aiops_engine import generate_rag_incident_copilot
+
+@app.get("/incidents/{incident_id}/rag-analysis")
+async def get_incident_rag_analysis(incident_id: int, db: AsyncSession = Depends(get_db)):
+    incident = await crud.get_incident(db, incident_id=incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    all_incidents = await crud.get_incidents(db, skip=0, limit=50)
+    history_dicts = [
+        {
+            "id": inc.id,
+            "title": inc.title,
+            "description": inc.description,
+            "status": inc.status,
+            "created_at": inc.created_at,
+        }
+        for inc in all_incidents
+    ]
+    return generate_rag_incident_copilot(
+        incident_id=incident.id,
+        title=incident.title,
+        description=incident.description,
+        severity=incident.severity,
+        historical_incidents=history_dicts,
+    )

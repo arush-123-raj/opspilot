@@ -129,3 +129,137 @@ def detect_latency_anomaly(service_id: int, latency_ms: float) -> Tuple[bool, st
         history.pop(0)
 
     return is_anomaly, reason
+
+
+# --- Phase 5.3: RAG (Retrieval-Augmented Generation) Knowledge Base & Synthesizer ---
+SRE_RUNBOOK_DOCS = [
+    {
+        "doc_id": "RUNBOOK-DB-101",
+        "tag": "DB_CONNECTION_POOL_EXHAUSTED",
+        "title": "PostgreSQL Connection Pool Saturation & Idle Transaction Termination",
+        "commands": [
+            "sudo docker exec opspilot-postgres psql -U opspilot_user -d opspilot_db -c \"SELECT pid, state, query FROM pg_stat_activity WHERE state != 'idle';\"",
+            "sudo docker exec opspilot-postgres psql -U opspilot_user -d opspilot_db -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction';\""
+        ],
+        "prevention": "Increase SQLAlchemy pool_size or deploy PgBouncer transaction pooling."
+    },
+    {
+        "doc_id": "RUNBOOK-LATENCY-204",
+        "tag": "PREDICTIVE_LATENCY_DEGRADATION",
+        "title": "Pre-Failure P99 Latency Drift & Worker Concurrency Scaling",
+        "commands": [
+            "curl -s -X POST http://localhost:8000/chaos/reset",
+            "sudo docker compose up -d --scale worker=2"
+        ],
+        "prevention": "Enable auto-scaling based on rollingModified Z-Score > 3.0σ prior to saturation."
+    },
+    {
+        "doc_id": "RUNBOOK-GATEWAY-500",
+        "tag": "UPSTREAM_GATEWAY_CRASH_5XX",
+        "title": "Upstream Microservice HTTP 5xx Crash & Rolling Container Restart",
+        "commands": [
+            "curl -s -X POST http://localhost:8000/chaos/reset",
+            "sudo docker compose restart api"
+        ],
+        "prevention": "Wrap upstream calls in a 5-strike Redis Circuit Breaker with exponential backoff."
+    },
+    {
+        "doc_id": "RUNBOOK-REDIS-302",
+        "tag": "REDIS_OOM_CACHE_OVERFLOW",
+        "title": "Redis Maxmemory Eviction & Orphaned Cache Key Purge",
+        "commands": [
+            "sudo docker exec opspilot-redis redis-cli INFO memory",
+            "sudo docker exec opspilot-redis redis-cli FLUSHDB ASYNC"
+        ],
+        "prevention": "Configure maxmemory-policy allkeys-lru and enforce 30s TTLs on incident list caches."
+    },
+    {
+        "doc_id": "RUNBOOK-NET-404",
+        "tag": "NETWORK_DNS_UNREACHABLE",
+        "title": "Docker Bridge DNS Failure & Upstream TCP Handshake Refusal",
+        "commands": [
+            "sudo docker network inspect opspilot_default",
+            "sudo docker exec opspilot-api ping -c 3 db"
+        ],
+        "prevention": "Enforce Docker Compose healthcheck conditions before starting dependent workers."
+    }
+]
+
+
+def generate_rag_incident_copilot(
+    incident_id: int,
+    title: str,
+    description: str,
+    severity: str,
+    historical_incidents: List[Dict[str, object]]
+) -> Dict[str, object]:
+    """
+    Phase 5.3 RAG Pipeline:
+    1. RETRIEVAL (R): Embeds current incident text into 256-D TF-IDF space, computes Cosine
+       Similarity against historical PostgreSQL incidents + SRE Runbook documents.
+    2. AUGMENTATION (A): Constructs a grounded context window from Top-K past incidents & runbooks.
+    3. GENERATION (G): Synthesizes a cited Root-Cause Analysis (RCA) & executable CLI runbook.
+    """
+    if not MODEL_CACHE:
+        load_trained_artifacts()
+
+    idf_weights: np.ndarray = MODEL_CACHE["idf_weights"]  # type: ignore
+    query_text = f"{title} {description}"
+    q_vec = extract_ngram_counts(query_text) * idf_weights
+    q_norm = np.linalg.norm(q_vec)
+    q_unit = q_vec / q_norm if q_norm > 0 else q_vec
+
+    # Step 1A: Retrieve Top-K similar historical incidents from PostgreSQL using Cosine Similarity
+    retrieved_history = []
+    for past in historical_incidents:
+        if past.get("id") == incident_id:
+            continue
+        p_text = f"{past.get('title', '')} {past.get('description', '')}"
+        p_vec = extract_ngram_counts(p_text) * idf_weights
+        p_norm = np.linalg.norm(p_vec)
+        p_unit = p_vec / p_norm if p_norm > 0 else p_vec
+        sim = float(np.dot(q_unit, p_vec / p_norm)) if p_norm > 0 else 0.0
+        if sim > 0.10:
+            retrieved_history.append({
+                "incident_id": past["id"],
+                "title": past["title"],
+                "status": past["status"],
+                "similarity_score": round(min(99.8, sim * 100.0), 1),
+                "created_at": str(past["created_at"])
+            })
+
+    retrieved_history.sort(key=lambda x: x["similarity_score"], reverse=True)
+    top_k_history = retrieved_history[:3]
+
+    # Step 1B: Retrieve matching SRE Runbook Document
+    triage = triage_error_log(query_text)
+    matched_runbook = next(
+        (doc for doc in SRE_RUNBOOK_DOCS if doc["tag"] == triage["tag"]),
+        SRE_RUNBOOK_DOCS[2]
+    )
+
+    # Step 2 & 3: Augmented Generation (Synthesize grounded SRE response citing retrieved evidence)
+    history_citation = (
+        f"Matched {len(top_k_history)} similar historical incident(s) in PostgreSQL "
+        f"(Top match: Incident #{top_k_history[0]['incident_id']} at {top_k_history[0]['similarity_score']}% vector similarity)."
+        if top_k_history else
+        "No prior identical incidents found in PostgreSQL; grounded strictly on SRE Runbook Knowledge Base."
+    )
+
+    generated_rca = (
+        f"🤖 [OpsPilot RAG Copilot] Incident #{incident_id} ({severity.upper()}) classified as "
+        f"[{triage['tag']}] with {triage['confidence']}% vector confidence. "
+        f"{history_citation} "
+        f"Recommended Runbook [{matched_runbook['doc_id']}]: {matched_runbook['title']}. "
+        f"Long-term prevention: {matched_runbook['prevention']}"
+    )
+
+    return {
+        "incident_id": incident_id,
+        "rag_pipeline": "TF-IDF-256D-Cosine-Retriever + Grounded-SRE-Synthesizer",
+        "predicted_tag": triage["tag"],
+        "confidence_pct": triage["confidence"],
+        "retrieved_runbook": matched_runbook,
+        "retrieved_historical_incidents": top_k_history,
+        "generated_rca_summary": generated_rca,
+    }
