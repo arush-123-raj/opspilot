@@ -290,3 +290,11 @@ async def reset_chaos():
     CHAOS_STATE["delay_ms"] = 0
     poll_all_services.delay()
     return {"message": "Chaos reset to healthy.", "chaos_state": CHAOS_STATE}
+
+
+from app.aiops_engine import load_trained_artifacts
+
+@app.post("/aiops/retrain")
+async def retrain_aiops_models():
+    metrics = load_trained_artifacts(force_retrain=True)
+    return {"status": "retrained", "model_artifact": "aiops_model_weights.npz", "metrics": metrics}

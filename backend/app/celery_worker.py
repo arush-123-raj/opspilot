@@ -32,24 +32,22 @@ celery_app.conf.beat_schedule = {
 }
 celery_app.conf.timezone = "UTC"
 
-
 def get_worker_session():
     worker_engine = create_async_engine(DATABASE_URL, poolclass=NullPool, echo=False)
     return sessionmaker(worker_engine, class_=AsyncSession, expire_on_commit=False)
 
+def get_sync_redis():
+    return sync_redis.from_url(REDIS_CACHE_URL, decode_responses=True)
 
 def broadcast_realtime_event(event_type: str, payload: dict):
-    """Publishes real-time event to Redis Pub/Sub channel and invalidates stale incident cache."""
     try:
-        r = sync_redis.from_url(REDIS_CACHE_URL, decode_responses=True)
-        # Clear cached GET /incidents/ keys so UI always gets fresh data
+        r = get_sync_redis()
         for key in r.scan_iter("incidents_skip:*"):
             r.delete(key)
         message = json.dumps({"event": event_type, "data": payload})
         r.publish("opspilot_events", message)
     except Exception as e:
         print(f"[Redis Broadcast Warning] {e}")
-
 
 @celery_app.task
 def send_incident_alert(incident_title: str, severity: str):
@@ -66,11 +64,9 @@ def send_incident_alert(incident_title: str, severity: str):
 
     return "Webhook URL not configured. Logged to console only."
 
-
 @celery_app.task(name="app.celery_worker.poll_all_services")
 def poll_all_services():
     return asyncio.run(_async_poll_all_services())
-
 
 async def _async_poll_all_services():
     SessionLocal = get_worker_session()
@@ -84,9 +80,17 @@ async def _async_poll_all_services():
                 dispatched += 1
         return f"Dispatched active health checks for {dispatched} services."
 
-
 @celery_app.task(name="app.celery_worker.check_single_service")
 def check_single_service(service_id: int, service_name: str, url: str):
+    r = get_sync_redis()
+    circuit_open_key = f"circuit_open:{service_id}"
+
+    # Stage 3 Circuit Breaker Check: Skip active poll if circuit is tripped in exponential backoff
+    if r.exists(circuit_open_key):
+        ttl = r.ttl(circuit_open_key)
+        print(f"⚡ [CIRCUIT BREAKER OPEN] Skipping poll for '{service_name}' (Cooling down for {ttl}s)")
+        return {"service": service_name, "status": "CIRCUIT_OPEN_BACKOFF", "cooldown_ttl_s": ttl}
+
     start = time.perf_counter()
     try:
         resp = requests.get(url, timeout=8)
@@ -97,7 +101,6 @@ def check_single_service(service_id: int, service_name: str, url: str):
             asyncio.run(_handle_failure(service_id, service_name, url, error_msg, severity="sev-1"))
             return {"service": service_name, "status": resp.status_code, "latency_ms": latency_ms}
 
-        # Phase 4 Predictive Anomaly Check on 200 OK responses
         is_anomaly, anomaly_reason = detect_latency_anomaly(service_id, latency_ms)
         if is_anomaly:
             asyncio.run(_handle_failure(service_id, service_name, url, anomaly_reason, severity="sev-2"))
@@ -112,15 +115,12 @@ def check_single_service(service_id: int, service_name: str, url: str):
         asyncio.run(_handle_failure(service_id, service_name, url, error_msg, severity="sev-1"))
         return {"service": service_name, "status": "DOWN", "latency_ms": latency_ms}
 
-
 @celery_app.task(name="app.celery_worker.autonomous_remediate_incident")
 def autonomous_remediate_incident(incident_id: int, service_name: str, target_url: str, playbook: str):
-    """Phase 5 Mind-Breaking Feature: Autonomous AI Self-Healing Agent."""
+    """Stage 5 Path A: Autonomous AI Self-Healing Agent."""
     return asyncio.run(_async_autonomous_remediate(incident_id, service_name, target_url, playbook))
 
-
 async def _async_autonomous_remediate(incident_id: int, service_name: str, target_url: str, playbook: str):
-    # If the target is our internal Chaos Simulator endpoint, automatically heal the chaos state!
     if "/chaos/target" in target_url:
         try:
             heal_url = target_url.replace("/chaos/target", "/chaos/reset")
@@ -150,8 +150,50 @@ async def _async_autonomous_remediate(incident_id: int, service_name: str, targe
             return f"Incident #{incident_id} autonomously resolved by OpsPilot AI."
     return f"Incident #{incident_id} already resolved or not found."
 
+@celery_app.task(name="app.celery_worker.escalate_unacknowledged_incident")
+def escalate_unacknowledged_incident(incident_id: int, service_name: str):
+    """Stage 5 Path B: Human Escalation Timer if engineer has not acknowledged/resolved the incident."""
+    return asyncio.run(_async_escalate_unacknowledged(incident_id, service_name))
+
+async def _async_escalate_unacknowledged(incident_id: int, service_name: str):
+    SessionLocal = get_worker_session()
+    async with SessionLocal() as db:
+        result = await db.execute(select(models.Incident).where(models.Incident.id == incident_id))
+        incident = result.scalars().first()
+        # If still stuck in 'investigating' (not acknowledged as 'identified' or 'resolved'), escalate!
+        if incident and incident.status == "investigating":
+            old_sev = incident.severity
+            incident.severity = "sev-1"
+            audit = models.AuditLog(
+                incident_id=incident.id,
+                action="SLA_BREACH_HUMAN_ESCALATED",
+                details=f"Unacknowledged within SLA window. Severity escalated ({old_sev} -> sev-1) and PagerDuty backup SRE paged."
+            )
+            db.add(audit)
+            await db.commit()
+            broadcast_realtime_event("INCIDENT_ESCALATED", {
+                "incident_id": incident.id,
+                "service": service_name,
+                "severity": "sev-1",
+                "status": incident.status
+            })
+            send_incident_alert.delay(f"[ESCALATED] {incident.title}", "sev-1")
+            return f"Incident #{incident_id} escalated to sev-1."
+    return f"Incident #{incident_id} already acknowledged or resolved."
 
 async def _handle_failure(service_id: int, service_name: str, url: str, error_detail: str, severity: str = "sev-1"):
+    # Stage 3: Track consecutive failures in Redis for Circuit Breaker
+    r = get_sync_redis()
+    fail_key = f"circuit_failures:{service_id}"
+    fail_count = r.incr(fail_key)
+    r.expire(fail_key, 300)
+
+    circuit_note = f" (Consecutive Failure #{fail_count})"
+    if fail_count >= 5:
+        backoff_seconds = min(300, 30 * (2 ** (fail_count - 5)))
+        r.setex(f"circuit_open:{service_id}", backoff_seconds, "OPEN")
+        circuit_note += f" — ⚡ CIRCUIT BREAKER TRIPPED! Backing off for {backoff_seconds}s to prevent DDoS."
+
     SessionLocal = get_worker_session()
     async with SessionLocal() as db:
         stmt = select(models.Incident).where(
@@ -164,18 +206,18 @@ async def _handle_failure(service_id: int, service_name: str, url: str, error_de
         if open_incident:
             audit = models.AuditLog(
                 incident_id=open_incident.id,
-                action="HEARTBEAT_STILL_FAILING",
-                details=f"Deduplicated check — service still experiencing issue. {error_detail}"
+                action="HEARTBEAT_STILL_FAILING" if fail_count < 5 else "CIRCUIT_BREAKER_TRIPPED",
+                details=f"Deduplicated check{circuit_note}: {error_detail}"
             )
             db.add(audit)
             await db.commit()
             broadcast_realtime_event("INCIDENT_HEARTBEAT_DEDUPLICATED", {
                 "incident_id": open_incident.id,
                 "service": service_name,
+                "fail_count": fail_count,
                 "details": error_detail
             })
         else:
-            # Phase 4: Run NLP Root-Cause Triage on raw error
             triage = triage_error_log(error_detail)
             enriched_description = f"[{triage['tag']}] {error_detail} | AI Root-Cause: {triage['summary']}"
 
@@ -192,7 +234,7 @@ async def _handle_failure(service_id: int, service_name: str, url: str, error_de
             audit = models.AuditLog(
                 incident_id=new_incident.id,
                 action="INCIDENT_AUTO_CREATED_AND_TRIAGED",
-                details=f"AI Tag [{triage['tag']}]: {triage['summary']} | Raw: {error_detail}"
+                details=f"AI Tag [{triage['tag']}] ({triage.get('confidence', 90)}% conf): {triage['summary']} | Raw: {error_detail}"
             )
             db.add(audit)
             await db.commit()
@@ -203,19 +245,28 @@ async def _handle_failure(service_id: int, service_name: str, url: str, error_de
                 "severity": new_incident.severity,
                 "status": new_incident.status,
                 "ai_tag": triage["tag"],
+                "confidence": triage.get("confidence", 90.0),
                 "service_id": service_id
             })
             send_incident_alert.delay(new_incident.title, new_incident.severity)
 
-            # Phase 5: If Autonomous Self-Healing is supported and aimed at a controllable endpoint, schedule healing in 10s
+            # Stage 5 Responder Router: Path A (Autonomous Self-Healing) vs Path B (Human Escalation Timer)
             if triage.get("auto_healable") and "/chaos/target" in url:
                 autonomous_remediate_incident.apply_async(
                     args=[new_incident.id, service_name, url, str(triage["playbook"])],
                     countdown=10
                 )
-
+            else:
+                # Schedule Path B Human Escalation check (60s SLA window for live demo)
+                escalate_unacknowledged_incident.apply_async(
+                    args=[new_incident.id, service_name],
+                    countdown=60
+                )
 
 async def _handle_recovery(service_id: int, service_name: str, latency_ms: float):
+    r = get_sync_redis()
+    r.delete(f"circuit_failures:{service_id}", f"circuit_open:{service_id}")
+
     SessionLocal = get_worker_session()
     async with SessionLocal() as db:
         stmt = select(models.Incident).where(
@@ -230,7 +281,7 @@ async def _handle_recovery(service_id: int, service_name: str, latency_ms: float
             audit = models.AuditLog(
                 incident_id=open_incident.id,
                 action="AUTO_RESOLVED_ON_RECOVERY",
-                details=f"Service '{service_name}' responded healthy ({latency_ms}ms)."
+                details=f"Service '{service_name}' responded healthy ({latency_ms}ms). Circuit breaker reset."
             )
             db.add(audit)
             await db.commit()
