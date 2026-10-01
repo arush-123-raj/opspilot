@@ -71,7 +71,7 @@ def poll_all_services():
 async def _async_poll_all_services():
     SessionLocal = get_worker_session()
     async with SessionLocal() as db:
-        result = await db.execute(select(models.Service))
+        result = await db.execute(select(models.Service).limit(12))
         services = result.scalars().all()
         dispatched = 0
         for svc in services:

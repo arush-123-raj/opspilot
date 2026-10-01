@@ -325,3 +325,18 @@ async def get_incident_rag_analysis(incident_id: int, db: AsyncSession = Depends
         severity=incident.severity,
         historical_incidents=history_dicts,
     )
+
+from app.fleet_and_auth import router as fleet_auth_router
+app.include_router(fleet_auth_router)
+
+import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+STATIC_UI_DIR = "/app/static_ui"
+if os.path.exists(STATIC_UI_DIR):
+    app.mount("/assets", StaticFiles(directory=f"{STATIC_UI_DIR}/assets"), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_spa_root():
+        return FileResponse(f"{STATIC_UI_DIR}/index.html")

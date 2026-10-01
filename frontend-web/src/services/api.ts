@@ -4,6 +4,33 @@ export const BACKEND_HOST = '13.53.197.95:8000';
 export const API_BASE_URL = `http://${BACKEND_HOST}`;
 export const WS_INCIDENTS_URL = `ws://${BACKEND_HOST}/ws/incidents`;
 
+export interface UserProfile {
+  id: number;
+  email: string;
+  name: string;
+  role: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  user: UserProfile;
+}
+
+export interface FleetService {
+  id: number;
+  name: string;
+  url: string;
+  category: string;
+  region: string;
+  status: 'operational' | 'degraded' | 'down' | string;
+  latency_ms: number;
+  uptime_pct: number;
+  http_code: number;
+  sparkline: number[];
+  last_checked: string;
+}
+
 export interface Incident {
   id: number;
   title: string;
@@ -58,6 +85,26 @@ const API = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+export async function loginUser(email: string, password: string, name: string = 'Arush Rajendra G'): Promise<AuthResponse> {
+  const res = await API.post<AuthResponse>('/auth/login', { email, password, name });
+  return res.data;
+}
+
+export async function fetchFleetTelemetry(): Promise<FleetService[]> {
+  const res = await API.get<FleetService[]>('/services/fleet');
+  return res.data;
+}
+
+export async function pingWebsiteLive(serviceId: number) {
+  const res = await API.post(`/services/ping/${serviceId}`);
+  return res.data;
+}
+
+export async function addCustomWebsite(name: string, url: string, category: string, region: string) {
+  const res = await API.post('/services/add-custom', { name, url, category, region });
+  return res.data;
+}
 
 export async function fetchIncidentsWithTelemetry(): Promise<{
   incidents: Incident[];
